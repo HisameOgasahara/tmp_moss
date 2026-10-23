@@ -1,6 +1,6 @@
 # MOSS-Image T4 스모크 테스트
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HisameOgasahara/tmp_moss/blob/fe0642db801d43b087a2e48382294698f90f6a60/MOSS_T4_Smoke.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HisameOgasahara/tmp_moss/blob/f5d3041a5fea49e3ab9ab2682f3431e88fc3951b/MOSS_T4_Smoke.ipynb)
 
 Colab에서 **런타임 → 런타임 유형 변경 → T4 GPU**를 선택하고 위에서부터 실행한다.
 
