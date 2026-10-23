@@ -1,6 +1,6 @@
 # MOSS-Image T4 후보 비교
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HisameOgasahara/tmp_moss/blob/f5d3041a5fea49e3ab9ab2682f3431e88fc3951b/MOSS_T4_Smoke.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HisameOgasahara/tmp_moss/blob/304b5e75e0ee335b7f8cac1b7eff61f3ae7d9855/MOSS_T4_Smoke.ipynb)
 
 Colab에서 **런타임 → 런타임 유형 변경 → T4 GPU**를 선택하고 1~5번 셀을 실행한다.
 3번 셀에서 기본 후보·단일 옵션·옵션 조합·프롬프트·생성 조건을 함께 선택한다.
