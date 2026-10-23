@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - MOSS_T4_Smoke.ipynb
+      - MOSS_T4_ComfyUI.ipynb
       - .github/workflows/refresh-colab-badge.yml
   workflow_dispatch:
 
@@ -47,21 +48,23 @@ jobs:
               with urllib.request.urlopen(req, timeout=30) as response:
                   return json.load(response)
 
-          revision = request('/commits?sha=main&path=MOSS_T4_Smoke.ipynb&per_page=1'
-                             + f'&fresh={time.time_ns()}')[0]['sha']
           readme = request('/contents/README.md?ref=main')
           original = base64.b64decode(readme['content']).decode('utf-8')
-          target = f'https://colab.research.google.com/github/{repo}/blob/{revision}/MOSS_T4_Smoke.ipynb'
-          updated, count = re.subn(
-              r'https://colab\.research\.google\.com/github/' + re.escape(repo)
-              + r'/blob/[^/\s)]+/MOSS_T4_Smoke\.ipynb(?:\?[^\s)]*)?', target, original)
-          if count != 1:
-              raise RuntimeError(f'Expected one Colab badge, found {count}')
+          updated = original
+          for notebook in ('MOSS_T4_Smoke.ipynb', 'MOSS_T4_ComfyUI.ipynb'):
+              revision = request(f'/commits?sha=main&path={notebook}&per_page=1'
+                                 + f'&fresh={time.time_ns()}')[0]['sha']
+              target = f'https://colab.research.google.com/github/{repo}/blob/{revision}/{notebook}'
+              updated, count = re.subn(
+                  r'https://colab\.research\.google\.com/github/' + re.escape(repo)
+                  + r'/blob/[^/\s)]+/' + re.escape(notebook) + r'(?:\?[^\s)]*)?', target, updated)
+              if count != 1:
+                  raise RuntimeError(f'Expected one Colab badge for {notebook}, found {count}')
+              print('Colab notebook:', target)
           if updated != original:
               request('/contents/README.md', {
-                  'message': 'Update Colab badge to notebook ' + revision[:12],
+                  'message': 'Update Colab badges to latest notebook commits',
                   'content': base64.b64encode(updated.encode('utf-8')).decode(),
                   'sha': readme['sha'], 'branch': 'main',
               })
-          print('Colab notebook:', target)
           PY
