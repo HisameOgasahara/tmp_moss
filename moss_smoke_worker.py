@@ -54,9 +54,16 @@ def run_candidate(config):
         sys.argv = ["moss-smoke", *config.get("flags", [])]
         import comfy.options
         comfy.options.enable_args_parsing()
+        from comfy.cli_args import args, enables_dynamic_vram
+        import cuda_malloc  # Configure the allocator before importing torch.
+        import comfy_aimdo.control as aimdo
+        if enables_dynamic_vram():
+            headroom = None if args.reserve_vram is None else int(args.reserve_vram * 2**30)
+            aimdo.init(simple_vram_headroom=headroom, nvml_pressure=not args.disable_nvml_pressure)
         import torch as torch_module
         torch = torch_module
         import nodes
+        import comfy.memory_management as dynamic_memory
         import comfy.model_management as memory
         import comfy.model_patcher as patchers
         import comfy.sampler_helpers as helpers
@@ -65,6 +72,14 @@ def run_candidate(config):
 
         if not torch.cuda.is_available() or "T4" not in torch.cuda.get_device_name(0):
             raise RuntimeError("이 노트북의 실행 대상은 NVIDIA T4입니다.")
+        # Match main.py's native NVIDIA DynamicVRAM initialization.
+        if enables_dynamic_vram() and memory.torch_version_numeric >= (2, 8):
+            devices = [(device.index, int(args.vram_headroom * 2**30))
+                       for device in memory.get_all_torch_devices()]
+            if aimdo.init_devices(iter(devices)):
+                patchers.CoreModelPatcher = patchers.ModelPatcherDynamic
+                dynamic_memory.aimdo_enabled = True
+        result["dynamic_vram"] = dynamic_memory.aimdo_enabled
         torch.cuda.reset_peak_memory_stats()
         result["gpu"] = torch.cuda.get_device_name(0)
         result["torch"] = torch.__version__
@@ -129,6 +144,7 @@ def run_candidate(config):
                 samplers.cast_to_load_options(options, device=device, dtype=model.model_dtype())
                 model.pre_run()
                 result["dit_compute_dtype"] = str(model.model.get_dtype_inference())
+                result["patcher"] = type(model).__name__
             stage("prepare_dit", prepare_model)
 
             try:
