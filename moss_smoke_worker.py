@@ -110,10 +110,10 @@ def run_candidate(config):
         with torch.inference_mode():
             positive = stage("encode_positive", lambda: encode(config["prompt"], "positive"))
             negative = stage("encode_negative", lambda: encode("", "negative"))
-            option = config.get("option", "none")
+            options_enabled = set(config.get("options", [config.get("option", "none")]))
             spectrum = None
 
-            if option == "lora8":
+            if "lora8" in options_enabled:
                 def patch_lora():
                     patched = nodes.LoraLoaderModelOnly().load_lora_model_only(
                         model, config["lora"], config.get("lora_strength", 1.0))[0]
@@ -123,10 +123,10 @@ def run_candidate(config):
                     result["lora_patch_keys"] = count
                     return patched
                 model = stage("patch_lora", patch_lora)
-            elif option == "compile":
+            if "compile" in options_enabled:
                 from comfy_extras.nodes_torch_compile import TorchCompileModel
                 model = stage("patch_compile", lambda: TorchCompileModel.execute(model, "inductor")[0])
-            elif option == "spectrum":
+            if "spectrum" in options_enabled:
                 spectrum = stage("import_spectrum", lambda: load_module(
                     "moss_spectrum_probe", config["spectrum_path"]))
                 settings = spectrum.SpectrumConfig(**config["spectrum_config"])
@@ -165,7 +165,7 @@ def run_candidate(config):
                 if spectrum is None:
                     stage("forward_positive", lambda: forward(positive, 0))
                     stage("forward_negative", lambda: forward(negative, 1))
-                    if option == "compile":
+                    if "compile" in options_enabled:
                         stage("forward_repeat", lambda: forward(positive, 0))
                 else:
                     def probe_spectrum():
@@ -187,8 +187,8 @@ def run_candidate(config):
                 samplers.cast_to_load_options(options, device=model.offload_device)
 
             # Record ComfyUI's built-in automatic tiling, if selected at runtime.
-            result["vae_actual_path"] = "tiled" if option == "tiled_vae" else "default"
-            if option != "tiled_vae":
+            result["vae_actual_path"] = "tiled" if "tiled_vae" in options_enabled else "default"
+            if "tiled_vae" not in options_enabled:
                 for method_name in ("decode_tiled_", "decode_tiled_1d", "decode_tiled_3d", "_decode_tiled_owned"):
                     original = getattr(vae, method_name)
                     def tracked_tiling(*args, _original=original, **kwargs):
@@ -197,7 +197,7 @@ def run_candidate(config):
                     setattr(vae, method_name, tracked_tiling)
 
             def decode(samples):
-                if option == "tiled_vae":
+                if "tiled_vae" in options_enabled:
                     pixels = nodes.VAEDecodeTiled().decode(vae, {"samples": samples}, 512, 64)[0]
                 else:
                     pixels = vae.decode(samples)
@@ -209,7 +209,7 @@ def run_candidate(config):
                 def generate():
                     from comfy_extras.nodes_slg import SkipLayerGuidanceDiTSimple
                     sampling_model = model
-                    if option != "lora8":
+                    if "lora8" not in options_enabled:
                         sampling_model = SkipLayerGuidanceDiTSimple.execute(
                             model, 0.0, 1.0, double_layers="", single_layers="22")[0]
                     pos = [[positive["cond"], {k: v for k, v in positive.items() if k != "cond"}]]
