@@ -1,4 +1,4 @@
-"""Run one MOSS candidate inside the Colab ComfyUI environment."""
+"""Measure isolated smoke checks or a persistent MOSS generation session."""
 
 import importlib
 import importlib.util
@@ -8,6 +8,8 @@ from pathlib import Path
 import sys
 import time
 import traceback
+
+SCHEMA_VERSION = 2
 
 
 def write_json(path, value):
@@ -25,232 +27,311 @@ def load_module(name, path):
     return importlib.import_module(name + ".nodes") if Path(path).name == "__init__.py" else module
 
 
-def run_candidate(config):
-    started = time.monotonic()
-    result = {
-        "candidate": config["id"], "mode": config.get("mode", "smoke"),
-        "status": "RUNNING", "stage": "import", "timings_s": {},
-        "config": config, "stage_started": started,
-    }
-    torch = None
-    write_json(config["state_path"], result)
+def build_requests(config):
+    first = dict(name="first", prompt=config["prompt"], seed=config["seed"],
+                 steps=config["steps"], cfg=config["cfg"])
+    return [first,
+            dict(first, name="warm_same_prompt", seed=config["seed"] + 1),
+            dict(first, name="warm_new_prompt", prompt=config["warm_prompt"]),
+            dict(first, name="warm_settings", prompt=config["warm_prompt"],
+                 steps=config["warm_steps"], cfg=config["warm_cfg"])]
 
-    def stage(name, function):
-        result.update(stage=name, stage_started=time.monotonic())
-        write_json(config["state_path"], result)
+
+class CandidateSession:
+    def __init__(self, config):
+        self.config = config
+        self.started = time.monotonic()
+        self.torch = None
+        self.options_enabled = set(config.get("options", [config.get("option", "none")]))
+        self.embedding_cache = {}
+        self.spectrum = None
+        self.result = dict(schema_version=SCHEMA_VERSION, candidate=config["id"],
+                           mode=config.get("mode", "smoke"), status="RUNNING", stage="import",
+                           timings_s={}, events=[], scenarios=[], config=config,
+                           stage_started=self.started)
+        self.persist()
+
+    def persist(self):
+        write_json(self.config["state_path"], self.result)
+
+    def synchronize(self):
+        if self.torch is not None and self.torch.cuda.is_initialized():
+            self.torch.cuda.synchronize()
+
+    def stage(self, name, function, **details):
+        self.synchronize()
+        self.result.update(stage=name, stage_started=time.monotonic())
+        self.persist()
         begin = time.monotonic()
+        event = dict(stage=name, **details)
         try:
             value = function()
-            if torch is not None and torch.cuda.is_initialized():
-                torch.cuda.synchronize()
+            self.synchronize()
+            event["status"] = "PASS"
             return value
+        except Exception:
+            event["status"] = "FAIL"
+            raise
         finally:
-            result["timings_s"][name] = round(time.monotonic() - begin, 3)
+            event["seconds"] = round(time.monotonic() - begin, 6)
+            self.result["timings_s"][name] = event["seconds"]
+            self.result["events"].append(event)
+            self.persist()
 
-    try:
-        root = Path(config["comfy_root"])
+    def initialize(self):
+        root = Path(self.config["comfy_root"])
         os.chdir(root)
         sys.path.insert(0, str(root))
-        sys.argv = ["moss-smoke", *config.get("flags", [])]
+        sys.argv = ["moss-measure", *self.config.get("flags", [])]
         import comfy.options
         comfy.options.enable_args_parsing()
         from comfy.cli_args import args, enables_dynamic_vram
-        import cuda_malloc  # Configure the allocator before importing torch.
+        import cuda_malloc
         import comfy_aimdo.control as aimdo
         if enables_dynamic_vram():
             headroom = None if args.reserve_vram is None else int(args.reserve_vram * 2**30)
             aimdo.init(simple_vram_headroom=headroom, nvml_pressure=not args.disable_nvml_pressure)
-        import torch as torch_module
-        torch = torch_module
+        import torch
         import nodes
         import comfy.memory_management as dynamic_memory
         import comfy.model_management as memory
         import comfy.model_patcher as patchers
         import comfy.sampler_helpers as helpers
         import comfy.samplers as samplers
-        import comfy.utils
-
+        self.torch, self.nodes, self.memory = torch, nodes, memory
+        self.patchers, self.helpers, self.samplers = patchers, helpers, samplers
         if not torch.cuda.is_available() or "T4" not in torch.cuda.get_device_name(0):
-            raise RuntimeError("이 노트북의 실행 대상은 NVIDIA T4입니다.")
-        # Match main.py's native NVIDIA DynamicVRAM initialization.
+            raise RuntimeError("T4 GPU를 선택하세요.")
         if enables_dynamic_vram() and memory.torch_version_numeric >= (2, 8):
             devices = [(device.index, int(args.vram_headroom * 2**30))
                        for device in memory.get_all_torch_devices()]
             if aimdo.init_devices(iter(devices)):
                 patchers.CoreModelPatcher = patchers.ModelPatcherDynamic
                 dynamic_memory.aimdo_enabled = True
-        result["dynamic_vram"] = dynamic_memory.aimdo_enabled
+        self.result.update(dynamic_vram=dynamic_memory.aimdo_enabled,
+                           gpu=torch.cuda.get_device_name(0), torch=torch.__version__, cuda=torch.version.cuda)
         torch.cuda.reset_peak_memory_stats()
-        result["gpu"] = torch.cuda.get_device_name(0)
-        result["torch"] = torch.__version__
-        result["cuda"] = torch.version.cuda
 
-        model = stage("load_dit", lambda: nodes.UNETLoader().load_unet(
-            config["dit"], config.get("weight_dtype", "default"))[0])
-        clip = stage("load_te", lambda: nodes.CLIPLoader().load_clip(
-            config["te"], "moss_image", config.get("text_device", "default"))[0])
-        vae = stage("load_vae", lambda: nodes.VAELoader().load_vae(config["vae"])[0])
+    def load_models(self):
+        self.load_started = time.monotonic()
+        cfg = self.config
+        self.model = self.stage("load_dit", lambda: self.nodes.UNETLoader().load_unet(
+            cfg["dit"], cfg.get("weight_dtype", "default"))[0])
+        self.clip = self.stage("load_te", lambda: self.nodes.CLIPLoader().load_clip(
+            cfg["te"], "moss_image", cfg.get("text_device", "default"))[0])
+        self.vae = self.stage("load_vae", lambda: self.nodes.VAELoader().load_vae(cfg["vae"])[0])
+        if "lora8" in self.options_enabled:
+            def patch_lora():
+                patched = self.nodes.LoraLoaderModelOnly().load_lora_model_only(
+                    self.model, cfg["lora"], cfg.get("lora_strength", 1.0))[0]
+                self.result["lora_patch_keys"] = len(patched.patches)
+                if not patched.patches:
+                    raise ValueError("적용된 LoRA patch가 없습니다.")
+                return patched
+            self.model = self.stage("patch_lora", patch_lora)
+        if "compile" in self.options_enabled:
+            from comfy_extras.nodes_torch_compile import TorchCompileModel
+            self.model = self.stage("patch_compile", lambda: TorchCompileModel.execute(self.model, "inductor")[0])
+        if "spectrum" in self.options_enabled:
+            self.spectrum = self.stage("import_spectrum", lambda: load_module(
+                "moss_spectrum_probe", cfg["spectrum_path"]))
+            settings = self.spectrum.SpectrumConfig(**cfg["spectrum_config"])
+            self.model = self.stage("patch_spectrum", lambda: self.spectrum.apply_spectrum_moss(self.model, settings))
+        self.result["load_and_patch_s"] = round(time.monotonic() - self.load_started, 6)
 
-        def check_tensor(tensor, expected=None):
-            if expected is not None and tuple(tensor.shape) != tuple(expected):
-                raise ValueError(f"shape={tuple(tensor.shape)}, expected={tuple(expected)}")
-            if not bool(torch.isfinite(tensor).all().item()):
-                raise FloatingPointError("NaN/Inf가 발생했습니다.")
+    def check_tensor(self, tensor, expected=None):
+        if expected is not None and tuple(tensor.shape) != tuple(expected):
+            raise ValueError(f"shape={tuple(tensor.shape)}, expected={tuple(expected)}")
+        if not bool(self.torch.isfinite(tensor).all().item()):
+            raise FloatingPointError("NaN/Inf가 발생했습니다.")
 
-        def encode(text, label):
-            output = clip.encode_from_tokens(clip.tokenize(text), return_dict=True)
-            tensor = output["cond"]
-            check_tensor(tensor)
-            if tensor.ndim != 3 or tensor.shape[0] != 1 or tensor.shape[-1] != 4096 or tensor.shape[1] < 1:
-                raise ValueError(f"잘못된 conditioning shape: {tuple(tensor.shape)}")
-            result[label + "_tokens"] = tensor.shape[1]
-            output["cond"] = tensor.cpu()
-            return output
+    def encode(self, text):
+        if text in self.embedding_cache:
+            return self.embedding_cache[text], True
+        output = self.clip.encode_from_tokens(self.clip.tokenize(text), return_dict=True)
+        tensor = output["cond"]
+        self.check_tensor(tensor)
+        if tensor.ndim != 3 or tensor.shape[0] != 1 or tensor.shape[-1] != 4096 or tensor.shape[1] < 1:
+            raise ValueError(f"잘못된 conditioning shape: {tuple(tensor.shape)}")
+        output["cond"] = tensor.cpu()
+        self.embedding_cache[text] = output
+        return output, False
 
-        with torch.inference_mode():
-            positive = stage("encode_positive", lambda: encode(config["prompt"], "positive"))
-            negative = stage("encode_negative", lambda: encode("", "negative"))
-            options_enabled = set(config.get("options", [config.get("option", "none")]))
-            spectrum = None
+    def shape(self):
+        return (1, 128, self.config["height"] // 16, self.config["width"] // 16)
 
-            if "lora8" in options_enabled:
-                def patch_lora():
-                    patched = nodes.LoraLoaderModelOnly().load_lora_model_only(
-                        model, config["lora"], config.get("lora_strength", 1.0))[0]
-                    count = len(patched.patches)
-                    if count == 0:
-                        raise ValueError("적용된 LoRA patch가 없습니다.")
-                    result["lora_patch_keys"] = count
-                    return patched
-                model = stage("patch_lora", patch_lora)
-            if "compile" in options_enabled:
-                from comfy_extras.nodes_torch_compile import TorchCompileModel
-                model = stage("patch_compile", lambda: TorchCompileModel.execute(model, "inductor")[0])
-            if "spectrum" in options_enabled:
-                spectrum = stage("import_spectrum", lambda: load_module(
-                    "moss_spectrum_probe", config["spectrum_path"]))
-                settings = spectrum.SpectrumConfig(**config["spectrum_config"])
-                model = stage("patch_spectrum", lambda: spectrum.apply_spectrum_moss(model, settings))
+    def spectrum_counts(self):
+        if self.spectrum is None:
+            return dict(actual=0, forecast=0)
+        wrappers = self.model.model_options["transformer_options"].get("wrappers", {})
+        roots = {id(wrapper.root_state): wrapper.root_state for group in wrappers.values()
+                 for values in group.values() for wrapper in values if hasattr(wrapper, "root_state")}
+        branches = [b for root in roots.values() for b in root.branches.values()]
+        return dict(actual=sum(b.actual_count for b in branches), forecast=sum(b.forecast_count for b in branches))
 
-            device = memory.get_torch_device()
-            shape = (1, 128, config["height"] // 16, config["width"] // 16)
-            latent = torch.randn(shape, generator=torch.Generator("cpu").manual_seed(config["seed"]))
-            options = patchers.create_model_options_clone(model.model_options)
-            helpers.prepare_model_patcher(model, {}, options)
-
-            def prepare_model():
-                required = model.model.memory_required(shape)
-                memory.load_models_gpu([model], memory_required=required)
-                samplers.cast_to_load_options(options, device=device, dtype=model.model_dtype())
-                model.pre_run()
-                result["dit_compute_dtype"] = str(model.model.get_dtype_inference())
-                result["patcher"] = type(model).__name__
-            stage("prepare_dit", prepare_model)
-
-            try:
-                noise = latent.to(device)
-                sigmas = torch.linspace(1.0, 0.05, config.get("spectrum_calls", 12), device=device)
-                # The same schedule object identifies a single Spectrum probe.
-                schedule = torch.cat((sigmas, sigmas.new_zeros(1)))
-
-                def forward(conditioning, branch, sigma=0.5):
-                    transformer_options = dict(options.get("transformer_options", {}))
-                    transformer_options["cond_or_uncond"] = [branch]
-                    transformer_options["sample_sigmas"] = schedule
-                    output = model.model.apply_model(
-                        noise, torch.tensor([sigma], device=device),
-                        c_crossattn=conditioning["cond"], transformer_options=transformer_options)
-                    check_tensor(output, shape)
-
-                if spectrum is None:
-                    stage("forward_positive", lambda: forward(positive, 0))
-                    stage("forward_negative", lambda: forward(negative, 1))
-                    if "compile" in options_enabled:
-                        stage("forward_repeat", lambda: forward(positive, 0))
-                else:
-                    def probe_spectrum():
-                        for sigma in sigmas.tolist():
-                            forward(positive, 0, sigma)
-                            forward(negative, 1, sigma)
-                        wrappers = model.model_options["transformer_options"]["wrappers"]
-                        roots = [wrapper.root_state for group in wrappers.values()
-                                 for values in group.values() for wrapper in values
-                                 if hasattr(wrapper, "root_state")]
-                        actual = sum(branch.actual_count for state in roots for branch in state.branches.values())
-                        forecast = sum(branch.forecast_count for state in roots for branch in state.branches.values())
-                        result.update(spectrum_actual=actual, spectrum_forecast=forecast)
-                        if actual == 0 or forecast == 0:
-                            raise ValueError(f"Spectrum 경로 미통과: actual={actual}, forecast={forecast}")
-                    stage("forward_spectrum", probe_spectrum)
-            finally:
-                model.cleanup()
-                samplers.cast_to_load_options(options, device=model.offload_device)
-
-            # Record ComfyUI's built-in automatic tiling, if selected at runtime.
-            result["vae_actual_path"] = "tiled" if "tiled_vae" in options_enabled else "default"
-            if "tiled_vae" not in options_enabled:
-                for method_name in ("decode_tiled_", "decode_tiled_1d", "decode_tiled_3d", "_decode_tiled_owned"):
-                    original = getattr(vae, method_name)
-                    def tracked_tiling(*args, _original=original, **kwargs):
-                        result["vae_actual_path"] = "auto_tiled"
-                        return _original(*args, **kwargs)
-                    setattr(vae, method_name, tracked_tiling)
-
-            def decode(samples):
-                if "tiled_vae" in options_enabled:
-                    pixels = nodes.VAEDecodeTiled().decode(vae, {"samples": samples}, 512, 64)[0]
-                else:
-                    pixels = vae.decode(samples)
-                check_tensor(pixels, (1, config["height"], config["width"], 3))
-                return pixels
-
-            stage("decode_vae", lambda: decode(latent * 0.1))
-            if config.get("mode", "smoke") == "generate":
-                def generate():
-                    from comfy_extras.nodes_slg import SkipLayerGuidanceDiTSimple
-                    sampling_model = model
-                    if "lora8" not in options_enabled:
-                        sampling_model = SkipLayerGuidanceDiTSimple.execute(
-                            model, 0.0, 1.0, double_layers="", single_layers="22")[0]
-                    pos = [[positive["cond"], {k: v for k, v in positive.items() if k != "cond"}]]
-                    neg = [[negative["cond"], {k: v for k, v in negative.items() if k != "cond"}]]
-                    count = config["steps"]
-                    cfg = config["cfg"]
-                    samples = nodes.common_ksampler(
-                        sampling_model, config["seed"], count, cfg, "euler", "sgm_uniform",
-                        pos, neg, {"samples": torch.zeros_like(latent)}, denoise=1.0)[0]["samples"]
-                    pixels = decode(samples)
-                    from PIL import Image
-                    import numpy as np
-                    image_path = Path(config["image_path"])
-                    image = Image.fromarray((pixels[0].cpu().numpy().clip(0, 1) * 255).astype(np.uint8))
-                    image.save(image_path)
-                    result["image_path"] = str(image_path)
-                stage("generate", generate)
-            result["status"] = "PASS_GENERATION" if config.get("mode") == "generate" else "PASS_SMOKE"
-            result["stage"] = "done"
-    except Exception as exc:
-        detail = str(exc)
-        if isinstance(exc, FloatingPointError):
-            status = "NONFINITE"
-        elif torch is not None and isinstance(exc, torch.cuda.OutOfMemoryError):
-            status = "CUDA_OOM"
-        elif isinstance(exc, MemoryError) or "Cannot allocate memory" in detail or "DefaultCPUAllocator" in detail:
-            status = "HOST_OOM"
+    def decode(self, samples):
+        if "tiled_vae" in self.options_enabled:
+            pixels = self.nodes.VAEDecodeTiled().decode(self.vae, {"samples": samples}, 512, 64)[0]
         else:
-            status = "FAIL"
-        result.update(status=status, error=f"{type(exc).__name__}: {detail}")
-        traceback.print_exc()
-    finally:
-        result["total_s"] = round(time.monotonic() - started, 3)
-        if torch is not None and torch.cuda.is_initialized():
-            result["torch_peak_allocated_gib"] = round(torch.cuda.max_memory_allocated() / 2**30, 3)
-            result["torch_peak_reserved_gib"] = round(torch.cuda.max_memory_reserved() / 2**30, 3)
-        write_json(config["state_path"], result)
-        write_json(config["result_path"], result)
-    return 0 if result["status"].startswith("PASS_") else 1
+            pixels = self.vae.decode(samples)
+        self.check_tensor(pixels, (1, self.config["height"], self.config["width"], 3))
+        return pixels
+
+    def track_vae_path(self):
+        self.result["vae_actual_path"] = "tiled" if "tiled_vae" in self.options_enabled else "default"
+        if "tiled_vae" not in self.options_enabled:
+            for method in ("decode_tiled_", "decode_tiled_1d", "decode_tiled_3d", "_decode_tiled_owned"):
+                original = getattr(self.vae, method)
+                def tracked(*args, _original=original, **kwargs):
+                    self.result["vae_actual_path"] = "auto_tiled"
+                    return _original(*args, **kwargs)
+                setattr(self.vae, method, tracked)
+
+    def smoke(self):
+        torch = self.torch
+        positive, _ = self.stage("smoke.encode_positive", lambda: self.encode(self.config["prompt"]))
+        negative, _ = self.stage("smoke.encode_negative", lambda: self.encode(""))
+        self.result.update(positive_tokens=positive["cond"].shape[1], negative_tokens=negative["cond"].shape[1])
+        device = self.memory.get_torch_device()
+        def setup():
+            latent = torch.randn(self.shape(), generator=torch.Generator("cpu").manual_seed(self.config["seed"]))
+            options = self.patchers.create_model_options_clone(self.model.model_options)
+            self.helpers.prepare_model_patcher(self.model, {}, options)
+            return latent, options
+        latent, options = self.stage("smoke.prepare_inputs", setup)
+        def prepare():
+            self.memory.load_models_gpu([self.model], memory_required=self.model.model.memory_required(self.shape()))
+            self.samplers.cast_to_load_options(options, device=device, dtype=self.model.model_dtype())
+            self.model.pre_run()
+            self.result.update(dit_compute_dtype=str(self.model.model.get_dtype_inference()), patcher=type(self.model).__name__)
+        self.stage("smoke.prepare_dit", prepare)
+        def transfer():
+            return latent.to(device)
+        noise = self.stage("smoke.transfer_latent", transfer)
+        count = self.config.get("spectrum_calls", 5) if self.spectrum else 1
+        sigmas = torch.linspace(1.0, 0.05, count, device=device) if self.spectrum else torch.tensor([0.5], device=device)
+        schedule = torch.cat((sigmas, sigmas.new_zeros(1)))
+        try:
+            for index, sigma in enumerate(sigmas.tolist()):
+                for branch, conditioning in enumerate((positive, negative)):
+                    def forward(conditioning=conditioning, branch=branch, sigma=sigma):
+                        transformer_options = dict(options.get("transformer_options", {}))
+                        transformer_options.update(cond_or_uncond=[branch], sample_sigmas=schedule)
+                        output = self.model.model.apply_model(noise, torch.tensor([sigma], device=device),
+                            c_crossattn=conditioning["cond"], transformer_options=transformer_options)
+                        self.check_tensor(output, self.shape())
+                    before = self.spectrum_counts()
+                    self.stage(f"smoke.forward.{index}.{branch}", forward, branch=branch, sigma=sigma)
+                    after = self.spectrum_counts()
+                    self.result["events"][-1]["execution"] = (
+                        "forecast" if after["forecast"] > before["forecast"] else "actual")
+            if "compile" in self.options_enabled:
+                self.stage("smoke.forward_repeat", forward, branch=1, sigma=sigma)
+            counts = self.spectrum_counts()
+            self.result.update(forward_calls=count*2 + int("compile" in self.options_enabled),
+                               spectrum_actual=counts["actual"], spectrum_forecast=counts["forecast"])
+            if self.spectrum and (counts["actual"] == 0 or counts["forecast"] == 0):
+                raise ValueError(f"Spectrum 경로 미통과: {counts}")
+        finally:
+            def cleanup():
+                self.model.cleanup()
+                self.samplers.cast_to_load_options(options, device=self.model.offload_device)
+            self.stage("smoke.cleanup_dit", cleanup)
+        self.stage("smoke.decode_vae", lambda: self.decode(latent * 0.1))
+
+    def prepare_sampling_model(self):
+        self.sampling_model = self.model
+        if "lora8" not in self.options_enabled:
+            from comfy_extras.nodes_slg import SkipLayerGuidanceDiTSimple
+            self.sampling_model = SkipLayerGuidanceDiTSimple.execute(
+                self.model, 0.0, 1.0, double_layers="", single_layers="22")[0]
+
+    def generate(self, request):
+        name = request["name"]
+        self.result["active_request"] = name
+        self.synchronize()
+        begin = time.monotonic()
+        torch = self.torch
+        torch.cuda.reset_peak_memory_stats()
+        row = dict(request, status="RUNNING", stages_s={}, image_path=str(
+            Path(self.config["output_dir"]) / f"{self.config['id']}-{name}.png"))
+        self.result["scenarios"].append(row)
+        self.persist()
+        def measured(label, fn):
+            key = name + "." + label
+            try:
+                return self.stage(key, fn)
+            finally:
+                if key in self.result["timings_s"]:
+                    row["stages_s"][label] = self.result["timings_s"][key]
+        try:
+            positive, row["positive_cache_hit"] = measured("encode_positive", lambda: self.encode(request["prompt"]))
+            negative, row["negative_cache_hit"] = measured("encode_negative", lambda: self.encode(""))
+            row.update(positive_tokens=positive["cond"].shape[1], negative_tokens=negative["cond"].shape[1])
+            def sample():
+                pos = [[positive["cond"], {k: v for k, v in positive.items() if k != "cond"}]]
+                neg = [[negative["cond"], {k: v for k, v in negative.items() if k != "cond"}]]
+                return self.nodes.common_ksampler(self.sampling_model, request["seed"], request["steps"], request["cfg"],
+                    "euler", "sgm_uniform", pos, neg, {"samples": torch.zeros(self.shape())}, denoise=1.0)[0]["samples"]
+            samples = measured("sample", sample)
+            row["dit_compute_dtype"] = str(self.model.model.get_dtype_inference())
+            self.result["vae_actual_path"] = "tiled" if "tiled_vae" in self.options_enabled else "default"
+            pixels = measured("decode_vae", lambda: self.decode(samples))
+            def save():
+                from PIL import Image
+                import numpy as np
+                image = Image.fromarray((pixels[0].cpu().numpy().clip(0, 1) * 255).astype(np.uint8))
+                image.save(row["image_path"])
+            measured("save_image", save)
+            row.update(status="PASS", request_s=round(time.monotonic()-begin, 6),
+                       peak_allocated_gib=round(torch.cuda.max_memory_allocated()/2**30, 3),
+                       peak_reserved_gib=round(torch.cuda.max_memory_reserved()/2**30, 3))
+            row["other_request_s"] = round(row["request_s"]-sum(row["stages_s"].values()), 6)
+            row["vae_actual_path"] = self.result["vae_actual_path"]
+            if name == "first":
+                self.result.update(first_image_ready_at=time.monotonic(),
+                    load_to_first_image_s=round(time.monotonic()-self.load_started, 6))
+            self.persist()
+        except Exception:
+            row.update(status="FAIL", request_s=round(time.monotonic()-begin, 6))
+            self.persist()
+            raise
+
+    def benchmark(self):
+        self.stage("prepare_sampling_model", self.prepare_sampling_model)
+        for request in build_requests(self.config):
+            self.generate(request)
+
+    def run(self):
+        try:
+            self.stage("runtime_init", self.initialize)
+            with self.torch.inference_mode():
+                self.load_models()
+                self.track_vae_path()
+                if self.config.get("mode", "smoke") == "benchmark":
+                    self.benchmark()
+                    self.result["status"] = "PASS_BENCHMARK"
+                else:
+                    self.smoke()
+                    self.result["status"] = "PASS_SMOKE"
+            self.result["stage"] = "done"
+        except Exception as exc:
+            if isinstance(exc, FloatingPointError):
+                status = "NONFINITE"
+            elif self.torch is not None and isinstance(exc, self.torch.cuda.OutOfMemoryError):
+                status = "CUDA_OOM"
+            elif isinstance(exc, MemoryError) or "Cannot allocate memory" in str(exc) or "DefaultCPUAllocator" in str(exc):
+                status = "HOST_OOM"
+            else:
+                status = "FAIL"
+            self.result.update(status=status, error=f"{type(exc).__name__}: {exc}")
+            traceback.print_exc()
+        finally:
+            self.result["worker_total_s"] = round(time.monotonic()-self.started, 6)
+            self.persist()
+            write_json(self.config["result_path"], self.result)
+        return 0 if self.result["status"].startswith("PASS_") else 1
 
 
 if __name__ == "__main__":
-    configuration = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    raise SystemExit(run_candidate(configuration))
+    raise SystemExit(CandidateSession(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))).run())
