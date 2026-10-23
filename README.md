@@ -2,7 +2,7 @@
 
 ## ComfyUI 프론트
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HisameOgasahara/tmp_moss/blob/main/MOSS_T4_ComfyUI.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HisameOgasahara/tmp_moss/blob/830724ec8cb6cabd5338645ccabe0473c702cdb6/MOSS_T4_ComfyUI.ipynb)
 
 **T4 GPU 선택 → 1~3번 셀 실행 → ComfyUI 열기 → 워크플로 불러오기 → Run.**
 INT8 본체·W4A8 인코더·8스텝 LoRA·Spectrum을 설치하고 cloudflared HTTPS 주소를 표시한다.
