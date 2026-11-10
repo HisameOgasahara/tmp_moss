@@ -2,10 +2,9 @@ name: Refresh Colab badge
 
 on:
   push:
-    branches: [main, codex/comfyui-latest]
+    branches: [main]
     paths:
       - MOSS_T4_Smoke.ipynb
-      - MOSS_T4_ComfyUI.ipynb
       - .github/workflows/refresh-colab-badge.yml
   workflow_dispatch:
 
@@ -54,7 +53,6 @@ jobs:
           updated = original
           notebook_branches = {
               'MOSS_T4_Smoke.ipynb': 'main',
-              'MOSS_T4_ComfyUI.ipynb': 'codex/comfyui-latest',
           }
           for notebook, branch in notebook_branches.items():
               query = urllib.parse.urlencode({
