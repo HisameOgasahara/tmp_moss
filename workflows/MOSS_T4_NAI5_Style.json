@@ -1,6 +1,6 @@
 {
-  "last_node_id": 11,
-  "last_link_id": 12,
+  "last_node_id": 12,
+  "last_link_id": 13,
   "nodes": [
     {
       "id": 1,
@@ -38,8 +38,8 @@
     },
     {
       "id": 2,
-      "type": "LoraLoader",
-      "title": "MOSS_T4_NAI5_Style",
+      "type": "LoraLoaderModelOnly",
+      "title": "8스텝 LoRA",
       "pos": [
         40,
         210
@@ -49,18 +49,13 @@
         130
       ],
       "flags": {},
-      "order": 1,
+      "order": 2,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
           "link": 1
-        },
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 12
         }
       ],
       "outputs": [
@@ -71,46 +66,36 @@
             2
           ],
           "slot_index": 0
-        },
-        {
-          "name": "CLIP",
-          "type": "CLIP",
-          "links": [
-            4,
-            5
-          ],
-          "slot_index": 1
         }
       ],
       "properties": {
-        "Node name for S&R": "LoraLoader"
+        "Node name for S&R": "LoraLoaderModelOnly"
       },
       "widgets_values": [
-        "moss_style_nai5_3437656.safetensors",
-        1.0,
+        "moss_sft_8step_lora.safetensors",
         1.0
       ]
     },
     {
       "id": 3,
-      "type": "SkipLayerGuidanceDiTSimple",
-      "title": "Skip Layer Guidance",
+      "type": "SpectrumMOSSImageManual",
+      "title": "Spectrum · 검증 설정",
       "pos": [
         440,
-        40
+        230
       ],
       "size": [
         350,
-        180
+        490
       ],
       "flags": {},
-      "order": 2,
+      "order": 4,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 2
+          "link": 13
         }
       ],
       "outputs": [
@@ -124,13 +109,22 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "SkipLayerGuidanceDiTSimple"
+        "Node name for S&R": "SpectrumMOSSImageManual"
       },
       "widgets_values": [
-        "",
-        "22",
-        0.0,
-        0.5
+        2,
+        0,
+        2.0,
+        0.75,
+        2,
+        2,
+        1,
+        0.1,
+        0.5,
+        "main_device",
+        true,
+        false,
+        true
       ]
     },
     {
@@ -146,7 +140,7 @@
         130
       ],
       "flags": {},
-      "order": 3,
+      "order": 1,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -181,7 +175,7 @@
         80
       ],
       "flags": {},
-      "order": 4,
+      "order": 5,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -207,14 +201,14 @@
       "title": "양성 프롬프트",
       "pos": [
         440,
-        590
+        760
       ],
       "size": [
         350,
         180
       ],
       "flags": {},
-      "order": 5,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
@@ -237,7 +231,7 @@
         "Node name for S&R": "CLIPTextEncode"
       },
       "widgets_values": [
-        "@neoanime, An anime illustration of a traveler at a quiet railway station in the rain."
+        "solo, extreme close-up, profile view, head turned and tilted down, finger touching her lips, eyes half closed, blush,\nlong crimson red hair falling across her face, black circular ornaments, pale skin with droplets and a wet sheen,\nhigh collar of a dark garment with a red pattern, no other clothing visible,\nwarm reddish light from the left, deep shadows, soft glow on her skin, floating droplets and highlights,\ndark blurred background, out-of-focus shapes in the gloom,\nintimate cinematic close-up, shallow depth of field, painterly digital rendering, saturated crimson palette, soft focus, glossy skin highlights, dramatic chiaroscuro,\n\nAn extreme close-up frames a red-haired girl in profile, her finger resting at her lips and her eyes half closed.\nDamp strands of crimson hair fall across her face, droplets catch the warm light on her skin, and a dark high collar with a red pattern sits at her neck.\nThe background dissolves into dark blur, leaving only her face, the glow on her lips and the deep shadows around her.\ncurvy,thighs,(mature woman),(mature,milf),(mature female),\n@neoanime,detailed eyes with glossy highlights, realistic PBR skin texture, realistic material rendering,\nmasterpiece, best quality,very aesthetic, ultra-detailed, high contrast,"
       ]
     },
     {
@@ -246,14 +240,14 @@
       "title": "음성 프롬프트",
       "pos": [
         440,
-        840
+        1010
       ],
       "size": [
         350,
         120
       ],
       "flags": {},
-      "order": 6,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -276,7 +270,7 @@
         "Node name for S&R": "CLIPTextEncode"
       },
       "widgets_values": [
-        ""
+        "extra toes,lowres, (bad), text, error, fewer, extra, missing, worst quality, jpeg artifacts, low quality, watermark, unfinished, displeasing, oldest, early, signature, artistic error, username, bad feet,scan, [abstract], english text, shiny hair"
       ]
     },
     {
@@ -292,7 +286,7 @@
         120
       ],
       "flags": {},
-      "order": 7,
+      "order": 8,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -309,8 +303,8 @@
         "Node name for S&R": "EmptyFlux2LatentImage"
       },
       "widgets_values": [
-        816,
-        1280,
+        1024,
+        1024,
         1
       ]
     },
@@ -327,7 +321,7 @@
         320
       ],
       "flags": {},
-      "order": 8,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {
@@ -365,11 +359,11 @@
         "Node name for S&R": "KSampler"
       },
       "widgets_values": [
-        6765770955,
-        "fixed",
-        35,
-        3.0,
-        "er_sde",
+        42,
+        "randomize",
+        8,
+        1.0,
+        "euler",
         "sgm_uniform",
         1.0
       ]
@@ -387,7 +381,7 @@
         100
       ],
       "flags": {},
-      "order": 9,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
@@ -429,7 +423,7 @@
         500
       ],
       "flags": {},
-      "order": 10,
+      "order": 11,
       "mode": 0,
       "inputs": [
         {
@@ -452,6 +446,61 @@
       "widgets_values": [
         "MOSS_T4_NAI5_Style"
       ]
+    },
+    {
+      "id": 12,
+      "type": "LoraLoader",
+      "title": "MOSS_T4_NAI5_Style",
+      "pos": [
+        440,
+        40
+      ],
+      "size": [
+        340,
+        130
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 2
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 12
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            13
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            4,
+            5
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoader"
+      },
+      "widgets_values": [
+        "moss_style_nai5_3437656.safetensors",
+        1.0,
+        1.0
+      ]
     }
   ],
   "links": [
@@ -467,7 +516,7 @@
       2,
       2,
       0,
-      3,
+      12,
       0,
       "MODEL"
     ],
@@ -481,7 +530,7 @@
     ],
     [
       4,
-      2,
+      12,
       1,
       6,
       0,
@@ -489,7 +538,7 @@
     ],
     [
       5,
-      2,
+      12,
       1,
       7,
       0,
@@ -547,9 +596,17 @@
       12,
       4,
       0,
-      2,
+      12,
       1,
       "CLIP"
+    ],
+    [
+      13,
+      12,
+      0,
+      3,
+      0,
+      "MODEL"
     ]
   ],
   "groups": [],
