@@ -2,7 +2,7 @@
 
 ## ComfyUI 프론트
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HisameOgasahara/tmp_moss/blob/830724ec8cb6cabd5338645ccabe0473c702cdb6/MOSS_T4_ComfyUI.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HisameOgasahara/tmp_moss/blob/e22a8b87e593e1169004b2e8b7741abdc04b1a55/MOSS_T4_ComfyUI.ipynb)
 
 **T4 GPU 선택 → 1~3번 셀 실행 → ComfyUI 열기 → 워크플로 불러오기 → Run.**
 INT8 본체·W4A8 인코더·8스텝 LoRA·Spectrum을 설치하고 cloudflared HTTPS 주소를 표시한다.
@@ -10,7 +10,7 @@ INT8 본체·W4A8 인코더·8스텝 LoRA·Spectrum을 설치하고 cloudflared 
 
 [워크플로 JSON](workflows/MOSS_T4_LoRA8_Spectrum.json)은 서버의 Workflows 목록과 노트북 4번 셀에서 사용할 수 있다.
 프롬프트·해상도·시드는 ComfyUI에서 변경한다. 같은 런타임의 기존 모델 캐시를 재사용한다.
-터널 주소를 아는 사람은 접속할 수 있으며, 노트북 5번 셀에서 ComfyUI와 터널을 종료한다.
+터널 주소를 아는 사람은 접속할 수 있으며, 실행 중인 3번 셀의 중지 버튼을 누르면 ComfyUI와 터널이 종료된다.
 
 ## 후보 비교
 
