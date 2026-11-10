@@ -2,7 +2,7 @@ name: Refresh Colab badge
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/comfyui-latest]
     paths:
       - MOSS_T4_Smoke.ipynb
       - MOSS_T4_ComfyUI.ipynb
@@ -30,6 +30,7 @@ jobs:
           import os
           import re
           import time
+          import urllib.parse
           import urllib.request
 
           repo = os.environ['GITHUB_REPOSITORY']
@@ -51,9 +52,15 @@ jobs:
           readme = request('/contents/README.md?ref=main')
           original = base64.b64decode(readme['content']).decode('utf-8')
           updated = original
-          for notebook in ('MOSS_T4_Smoke.ipynb', 'MOSS_T4_ComfyUI.ipynb'):
-              revision = request(f'/commits?sha=main&path={notebook}&per_page=1'
-                                 + f'&fresh={time.time_ns()}')[0]['sha']
+          notebook_branches = {
+              'MOSS_T4_Smoke.ipynb': 'main',
+              'MOSS_T4_ComfyUI.ipynb': 'codex/comfyui-latest',
+          }
+          for notebook, branch in notebook_branches.items():
+              query = urllib.parse.urlencode({
+                  'sha': branch, 'path': notebook, 'per_page': 1, 'fresh': time.time_ns(),
+              })
+              revision = request(f'/commits?{query}')[0]['sha']
               target = f'https://colab.research.google.com/github/{repo}/blob/{revision}/{notebook}'
               updated, count = re.subn(
                   r'https://colab\.research\.google\.com/github/' + re.escape(repo)
